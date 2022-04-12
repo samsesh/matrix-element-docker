@@ -1,84 +1,216 @@
-# Based on https://github.com/coturn/coturn/blob/master/docker/coturn/Dockerfile
-# Modified by Miouyouyou (https://github.com/Miouyouyou/matrix-coturn-docker-setup
+#
+# Dockerfile of coturn/coturn:alpine Docker image.
+#
 
-# This Docker is HEAVY weight. A lot of things are installed
-# in order to support various configurations.
-# It could be made much more lightweight, if you only intend
-# to support SQLite with a few users at best.
-
-### 1. stage: create build image
-FROM debian:stable AS coturn-build
-
-ENV BUILD_PREFIX /usr/local/src
-
-# Install build dependencies
-RUN export DEBIAN_FRONTEND=noninteractive && \
-	apt-get update && \
-	apt-get install -y build-essential git debhelper dpkg-dev libssl-dev libevent-dev sqlite3 libsqlite3-dev postgresql-client libpq-dev default-mysql-client default-libmysqlclient-dev libhiredis-dev libmongoc-dev libbson-dev
-
-# Clone coTURN
-WORKDIR ${BUILD_PREFIX}
-RUN git clone https://github.com/coturn/coturn.git
-
-# Build coTURN
-WORKDIR coturn
-RUN ./configure
-RUN make
-
-### 2. stage: create production image
-
-FROM debian:stable AS coturn
-
-ENV INSTALL_PREFIX /usr/local
-ENV BUILD_PREFIX /usr/local/src
-ENV TURNSERVER_GROUP turnserver
-ENV TURNSERVER_USER turnserver
-
-COPY --from=coturn-build ${BUILD_PREFIX}/coturn/bin/ ${INSTALL_PREFIX}/bin/
-COPY --from=coturn-build ${BUILD_PREFIX}/coturn/man/ ${INSTALL_PREFIX}/man/
-#COPY turnserver.conf ${INSTALL_PREFIX}/etc
-COPY --from=coturn-build ${BUILD_PREFIX}/coturn/sqlite/turndb ${INSTALL_PREFIX}/var/db/turndb
-COPY --from=coturn-build ${BUILD_PREFIX}/coturn/turndb ${INSTALL_PREFIX}/turndb
-# Install lib dependencies
-RUN export DEBIAN_FRONTEND=noninteractive && \
-	apt-get update && \
-	apt-get install -y libc6 libevent-core-2.1-6 libevent-extra-2.1-6 libevent-openssl-2.1-6 libevent-pthreads-2.1-6 libhiredis0.14 libmariadbclient-dev libpq5 libsqlite3-0 libssl1.1 libmongoc-1.0 libbson-1.0
-RUN apt-get install -y default-mysql-client postgresql-client redis-tools
-
-# Install MongoDB
-RUN apt-get update && \
-  apt-get install -y wget gnupg && \
-  wget -qO - https://www.mongodb.org/static/pgp/server-4.0.asc | apt-key add - && \
-  echo "deb http://repo.mongodb.org/apt/debian stretch/mongodb-org/4.0 main" | tee /etc/apt/sources.list.d/mongodb-org-4.0.list && \
-  echo "deb http://deb.debian.org/debian/ stretch main" | tee /etc/apt/sources.list.d/debian-stretch.list && \
-  apt-get update && \
-  apt-get install -y libcurl3 mongodb-org mongodb-org-server mongodb-org
-
-RUN if ! getent group "$TURNSERVER_GROUP" >/dev/null; then \
-        addgroup --system "$TURNSERVER_GROUP" || exit 1 ;\
-    fi \
-    && \
-    if ! getent passwd "$TURNSERVER_USER" >/dev/null; then \
-        adduser --system \
-           --home / \
-           --shell /bin/false \
-           --no-create-home \
-           --ingroup "$TURNSERVER_GROUP" \
-           --disabled-password \
-           --disabled-login \
-           --gecos "turnserver daemon" \
-               "$TURNSERVER_USER" || exit 1; \
-    fi
+ARG alpine_ver=3.15
 
 
-# set startup parameters
-# SUTN/TURN PORTS
-EXPOSE 3478 3479 3478/udp 3479/udp 80 80/udp
-EXPOSE 5349 5350 5349/udp 5350/udp 443 443/udp
-# CLI
-EXPOSE 5766
-# Relay Ports
-EXPOSE 49152-65535 49152-65535/udp
 
-CMD ${INSTALL_PREFIX}/bin/turnserver
 
+#
+# Stage 'dist-libprom' creates prometheus-client-c distribution.
+#
+
+# We compile prometheus-client-c from sources, because Alpine doesn't provide
+# it as its package yet.
+#
+# TODO: Re-check this to be present in packages on next Alpine major version update.
+
+# https://hub.docker.com/_/alpine
+FROM alpine:${alpine_ver} AS dist-libprom
+
+# Install tools for building.
+RUN apk update \
+ && apk add --no-cache \
+        ca-certificates cmake g++ git make \
+ && update-ca-certificates
+
+# Install prometheus-client-c build dependencies.
+RUN apk add --no-cache \
+        libmicrohttpd-dev
+
+# Prepare prometheus-client-c sources for building.
+ARG prom_ver=0.1.3
+RUN mkdir -p /build/ && cd /build/ \
+ && git init \
+ && git remote add origin https://github.com/digitalocean/prometheus-client-c \
+ && git fetch --depth=1 origin "v${prom_ver}" \
+ && git checkout FETCH_HEAD
+
+# Build libprom.so from sources.
+RUN mkdir -p /build/prom/build/ && cd /build/prom/build/ \
+ && TEST=0 cmake -G "Unix Makefiles" \
+                 -DCMAKE_INSTALL_PREFIX=/usr \
+                 -DCMAKE_SKIP_BUILD_RPATH=TRUE \
+                 -DCMAKE_C_FLAGS="-DPROM_LOG_ENABLE -g -O3" \
+                 .. \
+ && make
+
+# Build libpromhttp.so from sources.
+RUN mkdir -p /build/promhttp/build/ && cd /build/promhttp/build/ \
+ # Fix compiler warning: -Werror=incompatible-pointer-types
+ && sed -i 's/\&promhttp_handler/(MHD_AccessHandlerCallback)\&promhttp_handler/' \
+           /build/promhttp/src/promhttp.c \
+ && TEST=0 cmake -G "Unix Makefiles" \
+                 -DCMAKE_INSTALL_PREFIX=/usr \
+                 -DCMAKE_SKIP_BUILD_RPATH=TRUE \
+                 -DCMAKE_C_FLAGS="-g -O3" \
+                 .. \
+ && make VERBOSE=1
+
+# Install prometheus-client-c.
+RUN LIBS_DIR=/out/$(dirname $(find /usr/ -name libc.so)) \
+ && mkdir -p $LIBS_DIR/ \
+ && cp -rf /build/prom/build/libprom.so \
+           /build/promhttp/build/libpromhttp.so \
+       $LIBS_DIR/ \
+ && mkdir -p /out/usr/include/ \
+ && cp -rf /build/prom/include/* \
+           /build/promhttp/include/* \
+       /out/usr/include/ \
+ # Preserve license file.
+ && mkdir -p /out/usr/share/licenses/prometheus-client-c/ \
+ && cp /build/LICENSE /out/usr/share/licenses/prometheus-client-c/
+
+
+
+
+#
+# Stage 'dist-coturn' creates Coturn distribution.
+#
+
+# https://hub.docker.com/_/alpine
+FROM alpine:${alpine_ver} AS dist-coturn
+
+# Install tools for building.
+RUN apk update \
+ && apk add --no-cache \
+        autoconf ca-certificates coreutils g++ git libtool make \
+ && update-ca-certificates
+
+# Install Coturn build dependencies.
+RUN apk add --no-cache \
+        linux-headers \
+        libevent-dev \
+        openssl-dev \
+        postgresql-dev mariadb-connector-c-dev sqlite-dev \
+        hiredis-dev \
+        mongo-c-driver-dev \
+        libmicrohttpd-dev
+
+# Install prometheus-client-c distribution.
+COPY --from=dist-libprom /out/ /
+
+# Prepare local Coturn sources for building.
+COPY CMakeLists.txt \
+     configure \
+     INSTALL \
+     LICENSE LICENSE.OpenSSL \
+     make-man.sh Makefile.in \
+     postinstall.txt \
+     README.turn* \
+     /app/
+COPY cmake/ /app/cmake/
+COPY examples/ /app/examples/
+COPY man/ /app/man/
+COPY src/ /app/src/
+COPY turndb/ /app/turndb/
+WORKDIR /app/
+
+# Use Coturn sources from Git if `coturn_git_ref` is specified.
+ARG coturn_git_ref=HEAD
+ARG coturn_github_url=https://github.com
+ARG coturn_github_repo=coturn/coturn
+
+RUN if [ "${coturn_git_ref}" != 'HEAD' ]; then true \
+ && rm -rf /app/* \
+ && git init \
+ && git remote add origin ${coturn_github_url}/${coturn_github_repo} \
+ && git fetch --depth=1 origin "${coturn_git_ref}" \
+ && git checkout FETCH_HEAD \
+ && true; fi
+
+# Build Coturn from sources.
+# TODO: Remove this symlink with next Coturn release detecting MySQL libs correctly.
+RUN ln -s /usr/lib/pkgconfig/libmariadb.pc /usr/lib/pkgconfig/mariadb.pc \
+ && ./configure --prefix=/usr \
+                --turndbdir=/var/lib/coturn \
+                --disable-rpath \
+                --sysconfdir=/etc/coturn \
+                # No documentation included to keep image size smaller.
+                --mandir=/tmp/coturn/man \
+                --docsdir=/tmp/coturn/docs \
+                --examplesdir=/tmp/coturn/examples \
+ && make
+
+# Install and configure Coturn.
+RUN mkdir -p /out/ \
+ && DESTDIR=/out make install \
+ # Remove redundant files.
+ && rm -rf /out/tmp/ \
+ # Preserve license file.
+ && mkdir -p /out/usr/share/licenses/coturn/ \
+ && cp LICENSE /out/usr/share/licenses/coturn/ \
+ # Remove default config file.
+ && rm -f /out/etc/coturn/turnserver.conf.default
+
+# Install helper tools of Docker image.
+COPY docker/coturn/rootfs/ /out/
+COPY docker/coturn/alpine/rootfs/ /out/
+RUN chmod +x /out/usr/local/bin/docker-entrypoint.sh \
+             /out/usr/local/bin/detect-external-ip.sh
+RUN ln -s /usr/local/bin/detect-external-ip.sh \
+          /out/usr/local/bin/detect-external-ip
+RUN chown -R nobody:nogroup /out/var/lib/coturn/
+
+# Re-export prometheus-client-c distribution.
+COPY --from=dist-libprom /out/ /out/
+
+
+
+
+#
+# Stage 'runtime' creates final Docker image to use in runtime.
+#
+
+# https://hub.docker.com/_/alpine
+FROM alpine:${alpine_ver} AS runtime
+
+# Update system packages.
+RUN apk update \
+ && apk upgrade \
+ && apk add --no-cache ca-certificates \
+ && update-ca-certificates \
+ # Install Coturn dependencies.
+ && apk add --no-cache \
+        libevent \
+        libcrypto1.1 libssl1.1 \
+        libpq mariadb-connector-c sqlite-libs \
+        hiredis \
+        mongo-c-driver \
+        libmicrohttpd \
+ # Install `dig` tool for `detect-external-ip.sh`.
+ && apk add --no-cache \
+        bind-tools \
+ # Cleanup unnecessary stuff.
+ && rm -rf /var/cache/apk/*
+
+# Install Coturn distribution.
+COPY --from=dist-coturn /out/ /
+
+# Allow non-root using privileged ports.
+RUN apk add --no-cache libcap \
+ && setcap CAP_NET_BIND_SERVICE=+ep /usr/bin/turnserver \
+ # Cleanup unnecessary stuff.
+ && apk del libcap \
+ && rm -rf /var/cache/apk/*
+
+USER nobody:nogroup
+
+EXPOSE 3478 3478/udp 5349 5349/udp
+
+VOLUME ["/var/lib/coturn"]
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+CMD ["--log-file=stdout", "--external-ip=$(detect-external-ip)"]
