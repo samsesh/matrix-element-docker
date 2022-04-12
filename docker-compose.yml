@@ -9,7 +9,7 @@ services:
      - SYNAPSE_SERVER_NAME=${HOSTNAME}
    restart: always
    volumes:
-     - ./synapse-data:/data
+     - ./synapse-data/_data/:/data
    ports:
      - "8001:8008"
    networks:
