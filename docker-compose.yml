@@ -7,6 +7,9 @@ services:
      - UID=0
      - GID=0
      - SYNAPSE_SERVER_NAME=${HOSTNAME}
+     - SYNAPSE_VOIP_TURN_MAIN_URL=stun:${HOSTNAME}:5349
+     - SYNAPSE_VOIP_TURN_USERNAME=${turn_username}
+     - SYNAPSE_VOIP_TURN_PASSWORD=${turn_password}
    restart: always
    volumes:
      - ./synapse-data/_data/:/data
