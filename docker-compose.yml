@@ -6,7 +6,7 @@ services:
      - TZ=IR
      - UID=0
      - GID=0
-     - SYNAPSE_SERVER_NAME=my.matrix.host
+     - SYNAPSE_SERVER_NAME=${HOSTNAME}
    restart: always
    volumes:
      - ./synapse-data:/data
@@ -17,6 +17,8 @@ services:
   element-web:
    image: vectorim/element-web
    restart: unless-stopped
+   environment:
+    - MATRIX_THEMES='light,dark'
    volumes:
      - ./element-web-config/config.json:/app/config.json
    ports:
