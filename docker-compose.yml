@@ -6,6 +6,7 @@ services:
      - TZ=IR
      - UID=0
      - GID=0
+     - SYNAPSE_SERVER_NAME=my.matrix.host
    restart: always
    volumes:
      - ./synapse-data:/data
@@ -26,7 +27,12 @@ services:
   synapse-admin:
    image: awesometechnologies/synapse-admin
    restart: unless-stopped
+   environment:
+    - REACT_APP_SERVER=http://synapse:8008
    ports:
      - "8003:80"
    networks:
      - element
+networks:
+ element:
+  name: element
