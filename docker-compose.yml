@@ -25,7 +25,21 @@ services:
      - "8002:80"
    networks:
      - element
-
+  coturn:
+    build:
+      context: ./build/coturn
+      network: host
+    image: myy/coturn:latest
+    restart: always
+    volumes:
+      - "./coturn/conf/turnserver.conf:/etc/turnserver.conf:ro"
+      - "./coturn/data:/srv/coturn"
+      # You could use "docker secrets" instead
+      # Be sure to edit ./coturn/conf/turnserver.conf afterwards if
+      # you use "docker secrets" or change these paths
+      - ./ssl/turn.yourdomain.com/fullchain.pem:/etc/ssl/fullchain.pem:ro
+      - ./ssl/turn.yourdomain.com/privkey.pem:/etc/ssl/privkey.pem:ro
+    network_mode: host
   synapse-admin:
    image: awesometechnologies/synapse-admin
    restart: unless-stopped
