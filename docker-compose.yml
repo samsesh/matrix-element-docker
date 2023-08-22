@@ -48,7 +48,7 @@ services:
       # you use "docker secrets" or change these paths
       - ./ssl/${HOSTNAME}/fullchain.pem:/etc/ssl/fullchain.pem:ro
       - ./ssl/${HOSTNAME}/privkey.pem:/etc/ssl/privkey.pem:ro
-    network_mode: host
+    #network_mode: host
     networks:
      - element
   synapse-admin:
