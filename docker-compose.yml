@@ -7,7 +7,8 @@ services:
      - UID=0
      - GID=0
      - SYNAPSE_SERVER_NAME=${HOSTNAME}
-     - SYNAPSE_VOIP_TURN_MAIN_URL=stun:${HOSTNAME}:5349
+     - SYNAPSE_VOIP_TURN_MAIN_URL=stun:${HOSTNAME}:
+     5349
      - SYNAPSE_VOIP_TURN_USERNAME=${turn_username}
      - SYNAPSE_VOIP_TURN_PASSWORD=${turn_password}
    restart: always
@@ -29,20 +30,28 @@ services:
    networks:
      - element
   coturn:
-    build:
-      context: ./build/coturn
-      network: host
-    image: myy/coturn:latest
+    #build:
+    #  context: ./build/coturn
+    #  network: host
+    image:  coturn/coturn
     restart: always
+    ports:
+      - 3478:3478
+      - 3478:3478/udp
+      - 5349:5349
+      - 5349:5349/udp
+      - 49152-65535:49152-65535/udp
     volumes:
       - "./coturn/conf/turnserver.conf:/etc/turnserver.conf:ro"
       - "./coturn/data:/srv/coturn"
       # You could use "docker secrets" instead
       # Be sure to edit ./coturn/conf/turnserver.conf afterwards if
       # you use "docker secrets" or change these paths
-      - ./ssl/turn.yourdomain.com/fullchain.pem:/etc/ssl/fullchain.pem:ro
-      - ./ssl/turn.yourdomain.com/privkey.pem:/etc/ssl/privkey.pem:ro
+      - ./ssl/${HOSTNAME}/fullchain.pem:/etc/ssl/fullchain.pem:ro
+      - ./ssl/${HOSTNAME}/privkey.pem:/etc/ssl/privkey.pem:ro
     network_mode: host
+    networks:
+     - element
   synapse-admin:
    image: awesometechnologies/synapse-admin
    restart: unless-stopped
